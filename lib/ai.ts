@@ -10,6 +10,8 @@ function assertKey() {
   if (!KEY) throw new Error('Missing GOOGLE_API_KEY');
 }
 
+type EmbedResponse = { embedding?: { values: number[] } };
+
 async function embedOne(text: string): Promise<number[]> {
   assertKey();
   const res = await fetch(`${API}/models/${EMB_MODEL}:embedContent`, {
@@ -23,8 +25,8 @@ async function embedOne(text: string): Promise<number[]> {
     }),
   });
   if (!res.ok) throw new Error(`Embed failed: ${res.status} ${await res.text()}`);
-  const json = await res.json();
-  return (json.embedding?.values as number[]) ?? [];
+  const json = (await res.json()) as EmbedResponse;
+  return json.embedding?.values ?? [];
 }
 
 export async function embedTexts(texts: string[]): Promise<number[][]> {
@@ -36,9 +38,9 @@ export async function embedOneText(text: string): Promise<number[]> {
 }
 
 function cosineSim(a: number[], b: number[]) {
-  let dot = 0,
-    na = 0,
-    nb = 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
   const n = Math.min(a.length, b.length);
   for (let i = 0; i < n; i++) {
     dot += a[i] * b[i];
@@ -59,6 +61,11 @@ ${f.content.slice(0, 4000)}
     .join('\n\n');
 }
 
+type GenCandidatePart = { text?: string };
+type GenCandidateContent = { parts?: GenCandidatePart[] };
+type GenCandidate = { content?: GenCandidateContent };
+type GenResponse = { candidates?: GenCandidate[] };
+
 async function generateContent(prompt: string): Promise<string> {
   assertKey();
   const res = await fetch(`${API}/models/${GEN_MODEL}:generateContent`, {
@@ -72,11 +79,9 @@ async function generateContent(prompt: string): Promise<string> {
     }),
   });
   if (!res.ok) throw new Error(`Generate failed: ${res.status} ${await res.text()}`);
-  const json = await res.json();
-  const text =
-    json.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') ??
-    json.candidates?.[0]?.content?.parts?.[0]?.text ??
-    '';
+  const json = (await res.json()) as GenResponse;
+  const parts = json.candidates?.[0]?.content?.parts ?? [];
+  const text = parts.map((p) => p.text ?? '').join('');
   return text;
 }
 
@@ -85,7 +90,6 @@ export async function answerWithCitations(
   question: string,
   topK = 8
 ): Promise<{ answer: string; cited: { path: string }[] }> {
-  // Embed files (truncate for speed/cost)
   const truncated = files.map((f) => f.content.slice(0, 8000));
   const fileVecs = await embedTexts(truncated);
   const qVec = await embedOne(question);

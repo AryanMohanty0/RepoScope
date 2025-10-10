@@ -1,10 +1,12 @@
-// ./app/page.tsx
+// src/app/page.tsx
 'use client';
 
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 
 type Ref = { path: string; url: string };
+type ApiOk = { answer?: string; references?: Ref[] };
+type ApiErr = { error?: string };
 
 export default function Page() {
   const [repoUrl, setRepoUrl] = useState('');
@@ -25,14 +27,18 @@ export default function Page() {
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repoUrl, branch: branch || undefined, question }),
+        body: JSON.stringify({
+          repoUrl,
+          branch: branch || undefined,
+          question,
+        }),
       });
-      const data = await res.json();
+      const data = (await res.json()) as ApiOk & ApiErr;
       if (!res.ok) throw new Error(data.error || 'Request failed');
-      setAnswer(data.answer);
-      setRefs(data.references || []);
-    } catch (err: any) {
-      setError(err.message || 'Something went wrong');
+      setAnswer(data.answer ?? '');
+      setRefs(data.references ?? []);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
       setLoading(false);
     }
@@ -49,20 +55,20 @@ export default function Page() {
         <input
           placeholder="GitHub repo URL (e.g., https://github.com/vercel/next.js)"
           value={repoUrl}
-          onChange={e => setRepoUrl(e.target.value)}
+          onChange={(e) => setRepoUrl(e.target.value)}
           required
           style={{ padding: 10, border: '1px solid #ccc', borderRadius: 6 }}
         />
         <input
           placeholder="Branch (optional, defaults to repo default)"
           value={branch}
-          onChange={e => setBranch(e.target.value)}
+          onChange={(e) => setBranch(e.target.value)}
           style={{ padding: 10, border: '1px solid #ccc', borderRadius: 6 }}
         />
         <textarea
           placeholder="Your question…"
           value={question}
-          onChange={e => setQuestion(e.target.value)}
+          onChange={(e) => setQuestion(e.target.value)}
           required
           rows={4}
           style={{ padding: 10, border: '1px solid #ccc', borderRadius: 6 }}
@@ -101,9 +107,11 @@ export default function Page() {
             <>
               <h3 style={{ fontSize: 16, fontWeight: 700, margin: '16px 0 8px' }}>Sources</h3>
               <ul>
-                {refs.map(r => (
+                {refs.map((r) => (
                   <li key={r.path}>
-                    <a href={r.url} target="_blank" rel="noreferrer">{r.path}</a>
+                    <a href={r.url} target="_blank" rel="noreferrer">
+                      {r.path}
+                    </a>
                   </li>
                 ))}
               </ul>
@@ -111,10 +119,6 @@ export default function Page() {
           )}
         </section>
       )}
-
-      <footer style={{ marginTop: 48, color: '#999', fontSize: 12 }}>
-        Tip: Try small-to-medium public repos for fastest results. Private repos and giant monorepos are out-of-scope for this MVP.
-      </footer>
     </main>
   );
 }
