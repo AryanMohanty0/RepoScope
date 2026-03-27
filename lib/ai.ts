@@ -133,7 +133,6 @@ INSTRUCTIONS:
 FORMATTING RULES:
 - ALWAYS add a full blank line (double newline) after every heading (###) and every bold definition (e.g., **Definition**:).
 - Ensure each numbered list item starts on a new line with a blank line between items to improve readability.
-- Use horizontal rules (---) to separate major sections.
 
 Answer in professional Markdown.
 `;
