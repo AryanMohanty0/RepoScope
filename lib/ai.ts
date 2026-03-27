@@ -1,119 +1,139 @@
-// lib/ai.ts
+import { pipeline } from '@huggingface/transformers';
 import type { RepoFile } from './github';
+import { supabase } from './supabase';
 
 const API = 'https://generativelanguage.googleapis.com/v1';
-const KEY = process.env.GOOGLE_API_KEY!;
-const GEN_MODEL = process.env.GEN_MODEL || 'gemini-2.5-flash';
-const EMB_MODEL = process.env.EMB_MODEL || 'text-embedding-004';
+const KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GOOGLE_API_KEY!;
+const GEN_MODEL = process.env.GEN_MODEL || 'gemini-1.5-flash'; // Adjusted to current stable Flash versions
 
-function assertKey() {
-  if (!KEY) throw new Error('Missing GOOGLE_API_KEY');
-}
+/**
+ * Standardizes the URL to ensure database lookups match regardless of 
+ * trailing slashes or capitalization.
+ */
+const cleanUrl = (url: string) => {
+  if (!url) return "";
+  return String(url).trim().replace(/\/$/, "").toLowerCase();
+};
 
-type EmbedResponse = { embedding?: { values: number[] } };
+// --- 1. LOCAL EMBEDDING SETUP ---
+let extractor: any = null;
 
-async function embedOne(text: string): Promise<number[]> {
-  assertKey();
-  const res = await fetch(`${API}/models/${EMB_MODEL}:embedContent`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': KEY,
-    },
-    body: JSON.stringify({
-      content: { parts: [{ text }] },
-    }),
-  });
-  if (!res.ok) throw new Error(`Embed failed: ${res.status} ${await res.text()}`);
-  const json = (await res.json()) as EmbedResponse;
-  return json.embedding?.values ?? [];
-}
-
-export async function embedTexts(texts: string[]): Promise<number[][]> {
-  return Promise.all(texts.map((t) => embedOne(t)));
-}
-
-export async function embedOneText(text: string): Promise<number[]> {
-  return embedOne(text);
-}
-
-function cosineSim(a: number[], b: number[]) {
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
+async function getExtractor() {
+  if (!extractor) {
+    // Using MiniLM-L6-v2: Fast, local, and 384 dimensions
+    extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
+      cache_dir: './.model_cache' 
+    });
   }
-  return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-12);
+  return extractor;
 }
 
-function buildContext(files: { path: string; content: string }[]) {
-  return files
-    .map(
-      (f) => `File: ${f.path}
-\`\`\`
-${f.content.slice(0, 4000)}
-\`\`\``
-    )
-    .join('\n\n');
-}
+// --- 2. GEMINI TEXT GENERATION ---
+async function generateGeminiResponse(prompt: string): Promise<string> {
+  if (!KEY) throw new Error('Missing Google API Key');
 
-type GenCandidatePart = { text?: string };
-type GenCandidateContent = { parts?: GenCandidatePart[] };
-type GenCandidate = { content?: GenCandidateContent };
-type GenResponse = { candidates?: GenCandidate[] };
-
-async function generateContent(prompt: string): Promise<string> {
-  assertKey();
-  const res = await fetch(`${API}/models/${GEN_MODEL}:generateContent`, {
+  const res = await fetch(`${API}/models/${GEN_MODEL}:generateContent?key=${KEY}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': KEY,
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.2, // Low temperature for technical accuracy
+        maxOutputTokens: 2048,
+      }
     }),
   });
-  if (!res.ok) throw new Error(`Generate failed: ${res.status} ${await res.text()}`);
-  const json = (await res.json()) as GenResponse;
-  const parts = json.candidates?.[0]?.content?.parts ?? [];
-  const text = parts.map((p) => p.text ?? '').join('');
-  return text;
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Gemini API Error: ${res.status} - ${err}`);
+  }
+
+  const json = await res.json();
+  return json.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
 }
 
-export async function answerWithCitations(
-  files: RepoFile[],
-  question: string,
-  topK = 8
-): Promise<{ answer: string; cited: { path: string }[] }> {
-  const truncated = files.map((f) => f.content.slice(0, 8000));
-  const fileVecs = await embedTexts(truncated);
-  const qVec = await embedOne(question);
+// --- 3. MAIN LOGIC: SYNC -> SEARCH -> ANSWER ---
+export async function answerWithCitations(files: RepoFile[], question: string, repoUrl: string) {
+  const normalizedUrl = cleanUrl(repoUrl);
+  const generateEmbedding = await getExtractor();
+  
+  // STEP A: SYNC FILES TO SUPABASE
+  // We check if the file version exists; if not, we embed and save.
+  for (const file of files) {
+    const { data: existing } = await supabase
+      .from('documents')
+      .select('id')
+      .eq('repo_url', normalizedUrl)
+      .eq('file_path', file.path)
+      .maybeSingle();
 
-  const ranked = files
-    .map((f, i) => ({ file: f, score: cosineSim(fileVecs[i], qVec) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, Math.min(topK, fileVecs.length))
-    .map((s) => s.file);
+    if (!existing) {
+      console.log(`🚀 Indexing new file: ${file.path}`);
+      // Generate 384-dimensional embedding
+      const output = await generateEmbedding(file.content.slice(0, 3000), { 
+        pooling: 'mean', 
+        normalize: true 
+      });
+      const embedding = Array.from(output.data);
 
-  const context = buildContext(ranked);
-  const prompt = `
-You are RepoScope, an AI coding assistant that answers questions about a GitHub repository using only the provided context.
-- If the answer isn't fully supported by the context, say what's missing.
-- Be concise and technical.
-- End with a "Sources" list of file paths used.
+      await supabase.from('documents').insert({
+        repo_url: normalizedUrl,
+        file_path: file.path,
+        content: file.content,
+        embedding: embedding,
+        metadata: { source: 'github', indexed_at: new Date().toISOString() }
+      });
+    }
+  }
 
-Context:
+  // STEP B: VECTOR SEARCH
+  // Embed the user's question to find the most relevant parts of the code
+  const qOutput = await generateEmbedding(question, { pooling: 'mean', normalize: true });
+  const qVec = Array.from(qOutput.data);
+
+  const { data: matches, error: searchError } = await supabase.rpc('match_documents', {
+    query_embedding: qVec,
+    match_threshold: 0.3, // Adjust based on how strict you want the search to be
+    match_count: 10,      // Number of file chunks to send to Gemini
+    repo_url_filter: normalizedUrl
+  });
+
+  if (searchError) throw new Error(`Vector Search Error: ${searchError.message}`);
+
+  // STEP C: CONSTRUCT PROMPT & GET ANSWER
+  // Even if 0 matches found in Vector, we fallback to the files provided in the current fetch
+  const context = (matches && matches.length > 0)
+    ? matches.map((m: any) => `FILE: ${m.file_path}\nCONTENT:\n${m.content}`).join('\n---\n')
+    : files.slice(0, 5).map(f => `FILE: ${f.path}\n${f.content}`).join('\n---\n');
+
+  const finalPrompt = `
+You are RepoScope AI, a Senior Software Architect. 
+Analyze the following code context from the repository: ${repoUrl}
+
+QUESTION:
+${question}
+
+CONTEXT FROM CODEBASE:
 ${context}
 
-Question: ${question}
+INSTRUCTIONS:
+1. Provide an **Executive Summary**.
+2. Explain the **Logic Flow** or architecture related to the question.
+3. Highlight **Security** or **Performance** observations.
+4. Use **bold** for file names and function names.
+5. If the context does not contain the answer, state that clearly.
+6. ALWAYS add a full blank line (double newline) after every heading (###) and every bold definition (e.g., **Definition**:).
+7.Ensure each numbered list item starts on a new line with a blank line between items to improve readability.
 
-Answer in Markdown with a "Sources" section listing file paths.`;
+Answer in professional Markdown.
+`;
 
-  const answer = await generateContent(prompt);
-  return { answer, cited: ranked.map((f) => ({ path: f.path })) };
+  const answer = await generateGeminiResponse(finalPrompt);
+
+  // Return the answer and the specific files Gemini used for the analysis
+  return { 
+    answer, 
+    cited: (matches || []).map((m: any) => ({ path: m.file_path })) 
+  };
 }

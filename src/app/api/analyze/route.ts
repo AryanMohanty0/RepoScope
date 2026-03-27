@@ -1,44 +1,47 @@
-// src/app/api/analyze/route.ts
-import { z } from 'zod';
-import { getRepoFilesWithContent } from '@/lib/github';
-import { answerWithCitations } from '@/lib/ai';
+import { google } from '@ai-sdk/google';
+import { streamText } from 'ai';
+import { getRepoFilesWithContent } from '../../../../lib/github';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const Body = z.object({
-  repoUrl: z.string().url(),
-  branch: z.string().optional(),
-  question: z.string().min(5, 'Ask a longer question for better results'),
-});
-
-type ApiOk = { answer: string; references: { path: string; url: string }[] };
-type ApiErr = { error: string };
-
 export async function POST(req: Request) {
   try {
-    const body = Body.parse(await req.json());
-    const effectiveUrl = body.branch
-      ? `${body.repoUrl.replace(/\/$/, '')}/tree/${body.branch}`
-      : body.repoUrl;
-
-    const { files, parts } = await getRepoFilesWithContent(effectiveUrl, 30);
+    const { repoUrl, branch, question } = await req.json();
+    
+    // 1. Fetch files from GitHub
+    const { files, parts } = await getRepoFilesWithContent(repoUrl, 30);
 
     if (files.length === 0) {
-      return new Response(
-        JSON.stringify({ error: 'No readable text files found in this repo.' } satisfies ApiErr),
-        { status: 400 }
-      );
+      return Response.json({ error: 'No code files found in this repo.' }, { status: 400 });
     }
 
-    const { answer, cited } = await answerWithCitations(files, body.question, 8);
+    // 2. Format the codebase into a single string for Gemini
+    const codebaseContext = files
+      .map(f => `FILE: ${f.path}\nCONTENT:\n${f.content}\n---`)
+      .join("\n");
 
-    const blobBase = `https://github.com/${parts.owner}/${parts.repo}/blob/${parts.branch}`;
-    const references = cited.map((c) => ({ path: c.path, url: `${blobBase}/${c.path}` }));
+    // 3. Use Gemini to stream the result
+    const result = await streamText({
+      model: google('gemini-2.5-flash'), // Use 'gemini-1.5-flash' or the version you have access to
+      system: `You are RepoScope AI, a Senior Software Architect. 
+      Analyze the provided code context to answer the user's question. 
+      Structure your response with: Executive Summary, Detailed Analysis, Security & Optimization, and Sources.
+      Use Markdown headers and bold filenames.`,
+      prompt: `Codebase Context from ${parts.owner}/${parts.repo}:\n${codebaseContext}\n\nUser Question: ${question}`,
+    });
 
-    return Response.json({ answer, references } satisfies ApiOk);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Analysis failed';
-    return new Response(JSON.stringify({ error: msg } satisfies ApiErr), { status: 400 });
+    // 4. Return the stream with the file list in headers for the UI
+    const filePaths = files.map(f => f.path).join(',');
+    
+    return result.toTextStreamResponse({
+      headers: { 'x-analyzed-files': filePaths,
+        'x-repo-branch': parts.branch // Pass the detected branch back to the UI
+       }
+    });
+
+  } catch (err: any) {
+    console.error("Gemini API Error:", err);
+    return Response.json({ error: err.message }, { status: 400 });
   }
 }
