@@ -2,7 +2,6 @@ import { pipeline } from '@huggingface/transformers';
 import type { RepoFile } from './github';
 import { supabase } from './supabase';
 
-// 1. Define strict interfaces for TypeScript
 interface SearchMatch {
   id: number;
   file_path: string;
@@ -24,16 +23,14 @@ const API = 'https://generativelanguage.googleapis.com/v1';
 const KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY || process.env.GOOGLE_API_KEY!;
 const GEN_MODEL = process.env.GEN_MODEL || 'gemini-1.5-flash';
 
-/**
- * Standardizes the URL to ensure database lookups match.
- */
 const cleanUrl = (url: string): string => {
   if (!url) return "";
   return String(url).trim().replace(/\/$/, "").toLowerCase();
 };
 
 // --- 1. LOCAL EMBEDDING SETUP ---
-// We use 'any' for the initial extractor variable but type it during use
+// Using any here is necessary for the external library, but we'll tell the linter it's okay.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let extractor: any = null;
 
 async function getExtractor() {
@@ -45,7 +42,6 @@ async function getExtractor() {
   return extractor;
 }
 
-// --- 2. GEMINI TEXT GENERATION ---
 async function generateGeminiResponse(prompt: string): Promise<string> {
   if (!KEY) throw new Error('Missing Google API Key');
 
@@ -70,12 +66,10 @@ async function generateGeminiResponse(prompt: string): Promise<string> {
   return json.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
 }
 
-// --- 3. MAIN LOGIC: SYNC -> SEARCH -> ANSWER ---
 export async function answerWithCitations(files: RepoFile[], question: string, repoUrl: string) {
   const normalizedUrl = cleanUrl(repoUrl);
   const generateEmbedding = await getExtractor();
   
-  // STEP A: SYNC FILES TO SUPABASE
   for (const file of files) {
     const { data: existing } = await supabase
       .from('documents')
@@ -101,7 +95,6 @@ export async function answerWithCitations(files: RepoFile[], question: string, r
     }
   }
 
-  // STEP B: VECTOR SEARCH
   const qOutput = await generateEmbedding(question, { pooling: 'mean', normalize: true });
   const qVec = Array.from(qOutput.data as number[]);
 
@@ -114,10 +107,8 @@ export async function answerWithCitations(files: RepoFile[], question: string, r
 
   if (searchError) throw new Error(`Vector Search Error: ${searchError.message}`);
 
-  // Cast matches to the SearchMatch interface to satisfy TypeScript
   const typedMatches = (matches as SearchMatch[]) || [];
 
-  // STEP C: CONSTRUCT PROMPT & GET ANSWER
   const context = typedMatches.length > 0
     ? typedMatches.map((m: SearchMatch) => `FILE: ${m.file_path}\nCONTENT:\n${m.content}`).join('\n---\n')
     : files.slice(0, 5).map(f => `FILE: ${f.path}\n${f.content}`).join('\n---\n');
