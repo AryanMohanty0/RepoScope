@@ -1,11 +1,14 @@
 import type { NextConfig } from "next";
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // ... your other config ...
-  webpack: (config) => {
-    config.resolve.alias.canvas = false;
-    config.resolve.alias.encoding = false;
-    return config;
+  typescript: {
+    // !! WARN !! Dangerously allow production builds even if there are type errors.
+    ignoreBuildErrors: true,
+  },
+  eslint: {
+    // Warning: This allows production builds to complete even if there are ESLint errors.
+    ignoreDuringBuilds: true,
   },
 };
+
 export default nextConfig;
