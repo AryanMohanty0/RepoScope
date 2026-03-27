@@ -3,6 +3,16 @@ const GITHUB_API = 'https://api.github.com';
 export type RepoParts = { owner: string; repo: string; branch: string };
 export type RepoFile = { path: string; content: string };
 
+// 1. Define the interface for GitHub Tree items to avoid 'any'
+interface GitHubTreeItem {
+  path: string;
+  mode: string;
+  type: string;
+  sha: string;
+  size?: number;
+  url: string;
+}
+
 export function parseGitHubUrl(input: string): RepoParts {
   let url: URL;
   try {
@@ -16,7 +26,6 @@ export function parseGitHubUrl(input: string): RepoParts {
   const owner = parts[0];
   const repo = parts[1];
   
-  // Set branch to empty string if not in URL so we can detect it later
   let branch = ''; 
   if (parts[2] === 'tree' && parts[3]) branch = parts[3];
   
@@ -34,7 +43,6 @@ function ghHeaders(token?: string) {
   const activeToken = token || process.env.GITHUB_TOKEN;
   
   if (activeToken) {
-    // Changed 'token' to 'Bearer' for modern standards
     headers.Authorization = `Bearer ${activeToken}`;
   }
   return headers;
@@ -60,12 +68,12 @@ export async function getRepoFilesWithContent(
 ): Promise<{ files: RepoFile[], parts: RepoParts }> {
   const parts = parseGitHubUrl(repoUrl);
   
-  // Now this correctly detects if we need to look up the default branch (master vs main)
   if (!parts.branch) {
     parts.branch = await getDefaultBranch(parts.owner, parts.repo, token);
   }
 
-  const treeData = await fetchFromGitHub<{ tree: any[] }>(
+  // 2. Use the GitHubTreeItem interface here instead of any[]
+  const treeData = await fetchFromGitHub<{ tree: GitHubTreeItem[] }>(
     `${GITHUB_API}/repos/${parts.owner}/${parts.repo}/git/trees/${parts.branch}?recursive=1`,
     token
   );
@@ -90,7 +98,7 @@ export async function getRepoFilesWithContent(
       
       const text = Buffer.from(contentData.content, 'base64').toString('utf-8');
       return { path: entry.path, content: text };
-    } catch (e) {
+    } catch (_e) { // 3. Changed 'e' to '_e' to fix the unused variable error
       return null;
     }
   });

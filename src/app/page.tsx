@@ -3,16 +3,23 @@
 import { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Sparkles, Terminal, Link as LinkIcon, AlertCircle, FileText, History, Copy, Check, Loader2 } from 'lucide-react';
+import { Sparkles, AlertCircle, FileText, History, Copy, Check, Loader2 } from 'lucide-react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-
 
 import Navbar from "../components/Navbar";
 import Features from '../components/Features';
 
 type Ref = { path: string; url: string };
 type LocalRepo = { name: string; url: string };
+
+// Define an interface for the Markdown code component props
+interface MarkdownCodeProps {
+  node?: any; // The MDAST node (standard for react-markdown components)
+  inline?: boolean;
+  className?: string;
+  children?: React.ReactNode;
+}
 
 export default function Home() {
   const [repoUrl, setRepoUrl] = useState('');
@@ -25,7 +32,6 @@ export default function Home() {
   const [recentRepos, setRecentRepos] = useState<LocalRepo[]>([]);
   const [copied, setCopied] = useState(false);
 
-  // Load Local History on mount
   useEffect(() => {
     const saved = localStorage.getItem('reposcope_history');
     if (saved) {
@@ -80,14 +86,10 @@ export default function Home() {
         }
       }
 
-      // --- FIX: URL CLEANING LOGIC ---
-      // This helper ensures we get https://github.com/owner/repo 
-      // even if the user pasted a URL containing /tree/main/ or other fluff.
       const getCleanBase = (url: string) => {
         try {
           const u = new URL(url);
           const parts = u.pathname.split('/').filter(Boolean);
-          // Only take origin + first two parts (owner & repo)
           return `${u.origin}/${parts[0]}/${parts[1]}`;
         } catch {
           return url.replace(/\/$/, '');
@@ -95,23 +97,18 @@ export default function Home() {
       };
 
       const base = getCleanBase(repoUrl);
-      
-      // Get branch from headers (detected by server) or fallback to input/main
       const serverBranch = res.headers.get('x-repo-branch') || branch || 'main';
 
-      // 2. GET SOURCES FROM HEADERS
       const analyzedFiles = res.headers.get('x-analyzed-files');
       if (analyzedFiles) {
         const paths = analyzedFiles.split(',');
         const newRefs = paths.map(path => ({
           path,
-          // Correct structure: https://github.com/user/repo/blob/main/README.md
           url: `${base}/blob/${serverBranch}/${path}`
         }));
         setRefs(newRefs);
       }
 
-      // 3. HANDLE THE STREAM
       const reader = res.body?.getReader();
       const decoder = new TextDecoder();
       
@@ -128,9 +125,11 @@ export default function Home() {
       addToHistory(repoUrl);
       setTimeout(() => window.scrollTo({ top: 700, behavior: 'smooth' }), 100);
 
-    } catch (err: any) {
+    } catch (err: unknown) {
+      // Correctly handle unknown error type
+      const message = err instanceof Error ? err.message : 'An unexpected error occurred';
       console.error("Analysis Error:", err);
-      setError(err.message);
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -223,11 +222,12 @@ export default function Home() {
               <div className="prose prose-invert max-w-none bg-zinc-900/30 border border-zinc-800 rounded-[2rem] p-8 shadow-xl leading-relaxed">
                 <ReactMarkdown
                   components={{
-                    code({ node, inline, className, children, ...props }: any) {
+                    // Use the defined interface here instead of 'any'
+                    code({ node, inline, className, children, ...props }: MarkdownCodeProps) {
                       const match = /language-(\w+)/.exec(className || '');
                       return !inline && match ? (
                         <SyntaxHighlighter
-                          style={vscDarkPlus}
+                          style={vscDarkPlus as any} // SyntaxHighlighter style props often require a cast to avoid deep type nesting issues
                           language={match[1]}
                           PreTag="div"
                           className="rounded-xl border border-zinc-800 my-4"
@@ -249,7 +249,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Sidebar with Citations */}
             <div className="space-y-6 pt-4">
               <h3 className="text-xs font-bold uppercase tracking-[0.3em] text-zinc-600">Context Sources</h3>
               <div className="space-y-3">
